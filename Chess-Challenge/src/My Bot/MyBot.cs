@@ -32,18 +32,23 @@ public class MyBot : IChessBot
         }
     }
 
-    private readonly Dictionary<string, Evaluation> evaluationCache = new Dictionary<string, Evaluation>();
+    private readonly Dictionary<ulong, Evaluation> evaluationCache = new Dictionary<ulong, Evaluation>();
 
     public Move Think(Board board, Timer timer)
     {
-        Move[] moves = board.GetLegalMoves();
-        return moves[0];
+        const uint maxDepth = 5;
+        Move move = Move.NullMove;
+        for (uint depth = 1; depth <= maxDepth; depth++)
+            AlphaBeta(board, depth, 50000, -50000, out move);
+
+        return move;
     }
 
-    Evaluation AlphaBeta(Board board, uint depth, int upperBound, int lowerBound, uint maxDepth)
+    Evaluation AlphaBeta(Board board, uint depth, int upperBound, int lowerBound, out Move bestMove)
     {
+        bestMove = Move.NullMove;
         Evaluation bestEval;
-        bestEval.Value = int.MinValue;
+        bestEval.Value = -50000;
         bestEval.UpperBound = upperBound;
         bestEval.LowerBound = lowerBound;
         bestEval.Depth = depth;
@@ -54,21 +59,37 @@ public class MyBot : IChessBot
             bestEval.Value = 0;
             return bestEval;
         }
+
+        Move[] legalMoves = board.GetLegalMoves();
         
-        if (board.IsInCheckmate())
+        if (board.IsInCheck() && legalMoves.Length == 0)
         {
-            bestEval.Value = int.MinValue;
+            bestEval.Value = -50000;
             return bestEval;
         }
 
-        if (depth == maxDepth)
-            return Evaluation.FixedValue(depth, 0); // Eval Function here
+        bestMove = legalMoves[0];
 
-        foreach(Move move in board.GetLegalMoves())
+        if (depth == 0)
+            return EvalBoard(board, legalMoves, depth, upperBound, lowerBound);
+
+        foreach(Move move in legalMoves)
         {
             board.MakeMove(move);
-            Evaluation eval = AlphaBeta(board, depth+1, -localLowerBound, -upperBound, maxDepth).Negate();
+            Evaluation eval;
+            bool previousEvalFound = evaluationCache.TryGetValue(board.ZobristKey, out Evaluation cachedEval);
+            if (previousEvalFound && depth <= cachedEval.Depth && cachedEval.Value >= lowerBound && cachedEval.Value < upperBound)
+            {
+                eval = cachedEval;
+            }
+            else
+            {
+                eval = AlphaBeta(board, depth-1, -localLowerBound, -upperBound, out _);
+            }
             board.UndoMove(move);
+            eval = eval.Negate();
+            if (eval.Value > bestEval.Value )
+                bestMove = move;
             bestEval.Value = Math.Max(bestEval.Value, eval.Value);
             bestEval.UpperBound = Math.Min(bestEval.UpperBound, eval.UpperBound);
             bestEval.LowerBound = Math.Max(bestEval.LowerBound, eval.LowerBound);
@@ -77,7 +98,42 @@ public class MyBot : IChessBot
             if (bestEval.Value > localLowerBound)
                 localLowerBound = bestEval.Value;
         }
+
+        bestEval.Depth = depth;
+        evaluationCache[board.ZobristKey] = bestEval;
         return bestEval;
     }
 
+    Evaluation EvalBoard(Board board, Move[] legalMoves, uint depth, int upperBound, int lowerBound)
+    {
+        Evaluation eval;
+        eval.Depth = depth;
+        eval.LowerBound = lowerBound;
+        eval.UpperBound = upperBound;
+
+        int[] pieceValues = { 0, 100, 300, 300, 500, 900, 50000 };
+        int playerFactor = board.IsWhiteToMove ? 1 : -1;
+        int pieceFactor;
+        int materialValue = 0;
+        int activityValue = 0;
+        foreach(PieceList list in board.GetAllPieceLists())
+        {
+            foreach(Piece piece in list)
+            {
+                pieceFactor = piece.IsWhite ? 1 : -1; 
+                materialValue += playerFactor * pieceFactor * pieceValues[(int)piece.PieceType];  
+            }
+        }
+
+        int captures = 0;
+        foreach(Move move in legalMoves)
+        {
+            if (move.IsCapture)
+                captures++;
+        }
+
+        activityValue = legalMoves.Length + captures * 10;
+        eval.Value = materialValue + activityValue;
+        return eval;
+    }
 }
